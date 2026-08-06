@@ -1,0 +1,26 @@
+# addr width
+8
+
+# line size (2^0 = 1 byte)
+0
+
+# memory size
+8
+
+# cache size (2^2 = 4 bytes)
+2
+
+# associativity
+2
+
+# policy: LRU
+1
+
+# rl_mode: RL-State
+1
+
+# rl_alpha
+0.5
+
+# num_cores
+4

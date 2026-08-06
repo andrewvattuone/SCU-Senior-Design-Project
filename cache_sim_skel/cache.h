@@ -16,6 +16,41 @@ typedef struct {
     long double hit_rate;
 } CacheStats;
 
+typedef enum {
+    MESI_INVALID = 0,
+    MESI_SHARED,
+    MESI_EXCLUSIVE,
+    MESI_MODIFIED
+} MESIState;
+
+typedef enum {
+  RL_DISABLED = 0,
+  RL_STATE = 1,
+  RL_BITSET = 2,
+  RL_BOTH = 3
+} RLMode;
+
+typedef enum {
+  SHARE_BELOW = 0,
+  SHARE_ABOVE = 1
+} SharingClass;
+
+typedef struct {
+  bool valid;
+  unsigned int tag;
+  MESIState state_at_eviction;
+  SharingClass sharing_at_eviction;
+  unsigned long insertion_sequence;
+} EvictionHistoryEntry;
+
+typedef struct {
+  unsigned long history_hits;
+  unsigned long returned_evictions;
+  unsigned long positive_rewards;
+  unsigned long negative_rewards;
+  unsigned long first_candidates_accepted;
+  unsigned long second_chances_given;
+} RLStats;
 
 typedef struct {
   bool valid;           /* Valid */
@@ -24,10 +59,19 @@ typedef struct {
   unsigned long last_used;
   unsigned long insertion_time;
   unsigned long access_count;
+  MESIState mesi_state;
+  unsigned int sharer_count;
 } CacheLine;
 
 typedef struct {
   CacheLine * lines;    /* n-way: there are n lines */
+  EvictionHistoryEntry * history;
+  unsigned int history_capacity;
+  double q_modified;
+  double q_exclusive;
+  double q_shared;
+  double q_above_threshold;
+  double q_below_threshold;
 } CacheSet;
 
 typedef struct {
@@ -54,12 +98,27 @@ typedef struct {
   unsigned int num_ways;
   unsigned int set_index_bits;
   unsigned int tag_size;
+  RLMode rl_mode;
+  double rl_alpha;
+  unsigned int num_cores;
+  unsigned long history_sequence;
 
   CacheSet * sets;    /* sets */
   CacheStats * stats; /* statistics */
+  RLStats rl_stats;
 } Cache;
 
 Cache* initCache(unsigned int addr_width, unsigned int line_size, unsigned int mem_size, unsigned int cache_size, unsigned int assoc, unsigned int policy);
+Cache* initCacheWithRL(unsigned int addr_width, unsigned int line_size, unsigned int mem_size, unsigned int cache_size, unsigned int assoc, unsigned int policy, RLMode rl_mode, double rl_alpha, unsigned int num_cores);
 void freeCache(Cache* cache);
 void print_cache_config(Cache * cache);
 void print_stats(CacheStats * stat);
+void print_rl_stats(Cache * cache);
+
+SharingClass classify_sharing(unsigned int sharer_count, unsigned int num_cores);
+int history_find_by_tag(CacheSet *set, unsigned int tag);
+void history_remove_by_tag(CacheSet *set, unsigned int tag);
+int history_find_free(CacheSet *set);
+int history_find_oldest(CacheSet *set);
+void history_add_eviction_record(Cache *cache, CacheSet *set, unsigned int tag, MESIState state, SharingClass sharing);
+void rl_apply_reward(Cache *cache, CacheSet *set, MESIState state, SharingClass sharing, double reward);
