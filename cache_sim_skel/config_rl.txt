@@ -22,5 +22,8 @@
 # rl_alpha
 0.5
 
+# rl_epsilon
+0.1
+
 # num_cores
 4

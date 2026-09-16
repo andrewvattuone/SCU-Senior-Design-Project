@@ -50,6 +50,11 @@ typedef struct {
   unsigned long negative_rewards;
   unsigned long first_candidates_accepted;
   unsigned long second_chances_given;
+  unsigned long rl_decisions;            /* real RL victim decisions (excludes invalid-line fills) */
+  unsigned long exploration_decisions;   /* rl_decisions == exploration_decisions + exploitation_decisions */
+  unsigned long exploitation_decisions;
+  unsigned long exploration_accepts;
+  unsigned long exploration_protects;
 } RLStats;
 
 typedef struct {
@@ -100,6 +105,7 @@ typedef struct {
   unsigned int tag_size;
   RLMode rl_mode;
   double rl_alpha;
+  double rl_epsilon;         /* epsilon-greedy exploration rate, 0.0 <= epsilon <= 1.0 */
   unsigned int num_cores;
   unsigned long history_sequence;
 
@@ -109,7 +115,7 @@ typedef struct {
 } Cache;
 
 Cache* initCache(unsigned int addr_width, unsigned int line_size, unsigned int mem_size, unsigned int cache_size, unsigned int assoc, unsigned int policy);
-Cache* initCacheWithRL(unsigned int addr_width, unsigned int line_size, unsigned int mem_size, unsigned int cache_size, unsigned int assoc, unsigned int policy, RLMode rl_mode, double rl_alpha, unsigned int num_cores);
+Cache* initCacheWithRL(unsigned int addr_width, unsigned int line_size, unsigned int mem_size, unsigned int cache_size, unsigned int assoc, unsigned int policy, RLMode rl_mode, double rl_alpha, double rl_epsilon, unsigned int num_cores);
 void freeCache(Cache* cache);
 void print_cache_config(Cache * cache);
 void print_stats(CacheStats * stat);

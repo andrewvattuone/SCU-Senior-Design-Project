@@ -28,7 +28,12 @@ static void freePartialCache(Cache *cache, unsigned int initialized_sets) {
 }
 
 /* initalize the cache memory with the given set of parameters */
-Cache* initCacheWithRL(unsigned int addr_width, unsigned int line_size, unsigned int mem_size, unsigned int cache_size, unsigned int assoc, unsigned int policy, RLMode rl_mode, double rl_alpha, unsigned int num_cores) {
+Cache* initCacheWithRL(unsigned int addr_width, unsigned int line_size, unsigned int mem_size, unsigned int cache_size, unsigned int assoc, unsigned int policy, RLMode rl_mode, double rl_alpha, double rl_epsilon, unsigned int num_cores) {
+
+    if (rl_epsilon < 0.0 || rl_epsilon > 1.0) {
+        fprintf(stderr, "Error: Invalid rl_epsilon %f; expected value in [0, 1]\n", rl_epsilon);
+        return NULL;
+    }
 
     Cache* cache = (Cache*)calloc(1, sizeof(Cache));
     if (cache == NULL) {
@@ -53,6 +58,7 @@ Cache* initCacheWithRL(unsigned int addr_width, unsigned int line_size, unsigned
     cache->policy = policy;
     cache->rl_mode = rl_mode;
     cache->rl_alpha = rl_alpha;
+    cache->rl_epsilon = rl_epsilon;
     cache->num_cores = num_cores;
     cache->history_sequence = 0;
 
@@ -143,7 +149,7 @@ Cache* initCacheWithRL(unsigned int addr_width, unsigned int line_size, unsigned
 }
 
 Cache* initCache(unsigned int addr_width, unsigned int line_size, unsigned int mem_size, unsigned int cache_size, unsigned int assoc, unsigned int policy) {
-    return initCacheWithRL(addr_width, line_size, mem_size, cache_size, assoc, policy, RL_DISABLED, 0.1, 16);
+    return initCacheWithRL(addr_width, line_size, mem_size, cache_size, assoc, policy, RL_DISABLED, 0.1, 0.0, 16);
 }
 
 void freeCache(Cache* cache) {
@@ -297,6 +303,7 @@ void print_cache_config(Cache * cache){
             else if(cache->rl_mode==2) printf("RL mode: RL-Bitset\n");
             else if(cache->rl_mode==3) printf("RL mode: RL-Both\n");
             printf("RL alpha: %.6f\n", cache->rl_alpha);
+            printf("RL epsilon: %.6f\n", cache->rl_epsilon);
             printf("num cores: %u\n", cache->num_cores);
         }
 
@@ -324,6 +331,11 @@ void print_rl_stats(Cache * cache){
         printf("negative rewards: %lu\n", cache->rl_stats.negative_rewards);
         printf("first candidates accepted: %lu\n", cache->rl_stats.first_candidates_accepted);
         printf("second chances given: %lu\n", cache->rl_stats.second_chances_given);
+        printf("RL decisions: %lu\n", cache->rl_stats.rl_decisions);
+        printf("exploration decisions: %lu\n", cache->rl_stats.exploration_decisions);
+        printf("exploitation decisions: %lu\n", cache->rl_stats.exploitation_decisions);
+        printf("exploration accepts: %lu\n", cache->rl_stats.exploration_accepts);
+        printf("exploration protects: %lu\n", cache->rl_stats.exploration_protects);
 
         if(cache->num_sets <= 16) {
             for(unsigned int i = 0; i < cache->num_sets; i++) {

@@ -254,6 +254,27 @@ int selectVictim(Cache *cache, CacheSet *set) {
         return first_victim;
     }
 
+    cache->rl_stats.rl_decisions++;
+
+    /* Epsilon-greedy: with probability rl_epsilon, ignore the learned score and
+       pick ACCEPT/PROTECT at random. Never explores when rl_epsilon is 0.0
+       (no rand() calls, so legacy behavior is bit-for-bit identical) and never
+       when there is no alternate victim to protect with (num_ways < 2). */
+    if (cache->rl_epsilon > 0.0 && cache->num_ways >= 2 &&
+        ((double)rand() / ((double)RAND_MAX + 1.0)) < cache->rl_epsilon) {
+        cache->rl_stats.exploration_decisions++;
+        if (rand() % 2 == 0) {
+            cache->rl_stats.exploration_accepts++;
+            cache->rl_stats.first_candidates_accepted++;
+            return first_victim;
+        }
+        cache->rl_stats.exploration_protects++;
+        cache->rl_stats.second_chances_given++;
+        return selectBaselineVictim(cache, set, first_victim);
+    }
+
+    cache->rl_stats.exploitation_decisions++;
+
     double candidate_score = rl_candidate_score(cache, set, &set->lines[first_victim]);
     if (candidate_score >= 0.0 || cache->num_ways < 2) {
         cache->rl_stats.first_candidates_accepted++;
@@ -352,9 +373,10 @@ Cache * parse_config(FILE *file) {
     unsigned int addr_width, line_size, mem_size, cache_size, assoc, policy;
     unsigned int rl_mode = 0;
     double rl_alpha = 0.1;
+    double rl_epsilon = 0.0;
     unsigned int num_cores = 16;
     Cache * cache = NULL;
-    char optional_lines[3][MAX_LINE_LENGTH];
+    char optional_lines[4][MAX_LINE_LENGTH];
     unsigned int extra_non_comment_lines = 0;
 
     for (int i = 0; i < 6; i++) {
@@ -383,13 +405,21 @@ Cache * parse_config(FILE *file) {
         if (is_comment_or_empty(line)) {
             continue;
         }
-        if (extra_non_comment_lines < 3) {
+        if (extra_non_comment_lines < 4) {
             strcpy(optional_lines[extra_non_comment_lines], line);
         }
         extra_non_comment_lines++;
     }
 
-    if (extra_non_comment_lines > 0 && extra_non_comment_lines <= 3) {
+    /* Optional RL lines. Backward compatibility is by line count:
+       3 lines = legacy format (rl_mode, rl_alpha, num_cores), rl_epsilon defaults to 0.0
+       4 lines = new format    (rl_mode, rl_alpha, rl_epsilon, num_cores) */
+    if (extra_non_comment_lines > 4) {
+        fprintf(stderr, "Error: Too many configuration lines; expected at most 4 optional RL lines (rl_mode, rl_alpha, rl_epsilon, num_cores)\n");
+        return NULL;
+    }
+
+    if (extra_non_comment_lines > 0) {
         if (!parse_unsigned_strict(optional_lines[0], &rl_mode) || rl_mode > 3) {
             fprintf(stderr, "Error: Invalid rl_mode in configuration\n");
             return NULL;
@@ -400,8 +430,18 @@ Cache * parse_config(FILE *file) {
                 return NULL;
             }
         }
-        if (extra_non_comment_lines >= 3) {
+        if (extra_non_comment_lines == 3) {
             if (!parse_unsigned_strict(optional_lines[2], &num_cores) || num_cores == 0) {
+                fprintf(stderr, "Error: Invalid num_cores in configuration; expected positive integer\n");
+                return NULL;
+            }
+        }
+        if (extra_non_comment_lines == 4) {
+            if (!parse_double_strict(optional_lines[2], &rl_epsilon) || rl_epsilon < 0.0 || rl_epsilon > 1.0) {
+                fprintf(stderr, "Error: Invalid rl_epsilon in configuration; expected value in [0, 1]\n");
+                return NULL;
+            }
+            if (!parse_unsigned_strict(optional_lines[3], &num_cores) || num_cores == 0) {
                 fprintf(stderr, "Error: Invalid num_cores in configuration; expected positive integer\n");
                 return NULL;
             }
@@ -413,7 +453,7 @@ Cache * parse_config(FILE *file) {
         return NULL;
     }
 
-    cache = initCacheWithRL(addr_width,line_size,mem_size,cache_size, assoc,policy,(RLMode)rl_mode,rl_alpha,num_cores);
+    cache = initCacheWithRL(addr_width,line_size,mem_size,cache_size, assoc,policy,(RLMode)rl_mode,rl_alpha,rl_epsilon,num_cores);
     return cache;
 }
 

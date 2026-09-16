@@ -4,10 +4,10 @@ $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $root
 
 function CacheSimPath {
-    if (Test-Path ".\cache_sim.exe") {
-        return ".\cache_sim.exe"
+    if (Test-Path ".\cache_sim_skel\cache_sim.exe") {
+        return ".\cache_sim_skel\cache_sim.exe"
     }
-    return ".\cache_sim"
+    return ".\cache_sim_skel\cache_sim"
 }
 
 function Write-TestFile($path, $content) {
@@ -33,8 +33,12 @@ function Assert-True($condition, $message) {
 $tmp = Join-Path $root "tests\_tmp"
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
-gcc -I. -o tests\rl_unit_tests.exe tests\rl_unit_tests.c cache.c util.c -lm
-& tests\rl_unit_tests.exe
+gcc -o cache_sim_skel\cache_sim.exe cache_sim_skel\main.c cache_sim_skel\cache.c cache_sim_skel\util.c -lm
+Assert-True ($LASTEXITCODE -eq 0) "cache_sim builds from current sources"
+
+gcc -o tests\rl_unit_tests.exe tests\rl_unit_tests.c cache_sim_skel\cache.c cache_sim_skel\util.c -lm
+Assert-True ($LASTEXITCODE -eq 0) "RL unit tests compile"
+& .\tests\rl_unit_tests.exe
 Assert-True ($LASTEXITCODE -eq 0) "C RL unit tests exited successfully"
 
 $sixLineConfig = Join-Path $tmp "six_line_lru.cfg"
@@ -139,5 +143,55 @@ R 0x0 M 5
 $run = Run-Sim $rlConfig $badSharerTrace
 Assert-True ($run.Code -ne 0) "RL rejects sharer_count above num_cores"
 Assert-True ($run.Output -match "Invalid sharer_count") "bad sharer error is clear"
+
+# legacy 3-optional-line RL config (rl_mode, rl_alpha, num_cores) still works, epsilon defaults to 0
+$run = Run-Sim $rlConfig $rlTrace
+Assert-True ($run.Code -eq 0) "legacy 3-line RL config still runs"
+Assert-True ($run.Output -match "RL epsilon: 0\.000000") "legacy config defaults epsilon to 0"
+Assert-True ($run.Output -match "exploration decisions: 0") "epsilon 0 never explores"
+
+# new 4-optional-line RL config (rl_mode, rl_alpha, rl_epsilon, num_cores)
+$epsConfig = Join-Path $tmp "rl_epsilon.cfg"
+Write-TestFile $epsConfig @"
+16
+2
+6
+3
+2
+1
+1
+0.5
+1.0
+4
+"@
+$epsTraceLines = for ($i = 0; $i -lt 50; $i++) { "R 0x{0:x} M 1" -f ($i * 4) }
+$epsTrace = Join-Path $tmp "rl_epsilon.trace"
+Write-TestFile $epsTrace (($epsTraceLines -join "`n") + "`n")
+$run = Run-Sim $epsConfig $epsTrace
+Assert-True ($run.Code -eq 0) "4-line RL config with epsilon runs"
+Assert-True ($run.Output -match "RL epsilon: 1\.000000") "epsilon is printed in cache config"
+Assert-True ($run.Output -match "RL decisions: 48") "48 real RL decisions counted"
+Assert-True ($run.Output -match "exploration decisions: 48") "epsilon 1 explores on every RL decision"
+Assert-True ($run.Output -match "exploitation decisions: 0") "epsilon 1 never exploits"
+
+# invalid epsilon values are rejected
+foreach ($badEpsilon in "-0.1", "1.1", "abc") {
+    $badConfig = Join-Path $tmp "rl_bad_epsilon.cfg"
+    Write-TestFile $badConfig @"
+16
+2
+6
+3
+2
+1
+1
+0.5
+$badEpsilon
+4
+"@
+    $run = Run-Sim $badConfig $rlTrace
+    Assert-True ($run.Code -ne 0) "epsilon $badEpsilon is rejected"
+    Assert-True ($run.Output -match "Invalid rl_epsilon") "epsilon $badEpsilon error is clear"
+}
 
 Write-Host "run_rl_tests: PASS"
