@@ -107,13 +107,15 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
 
 CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref, bool skip)
     : address(req.address), v_address(req.v_address), data(req.data), ip(req.ip), instr_id(req.instr_id), pf_metadata(req.pf_metadata), cpu(req.cpu),
-      type(req.type), prefetch_from_this(local_pref), skip_fill(skip), is_translated(req.is_translated), instr_depend_on_me(req.instr_depend_on_me)
+      type(req.type), is_writeback(req.is_writeback), coherence_writeback_id(req.coherence_writeback_id), prefetch_from_this(local_pref), skip_fill(skip),
+      is_translated(req.is_translated), instr_depend_on_me(req.instr_depend_on_me)
 {
 }
 
 CACHE::fill_type::fill_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued)
     : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), cpu(req.cpu), type(req.type),
-      prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
+      is_writeback(req.is_writeback), coherence_writeback_id(req.coherence_writeback_id), prefetch_from_this(req.prefetch_from_this),
+      time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
 {
 }
 
@@ -136,6 +138,8 @@ CACHE::fill_type CACHE::fill_type::merge(fill_type predecessor, fill_type succes
   retval.to_return = merged_return;
   retval.data_promise = predecessor.data_promise;
   retval.coherence_drop = predecessor.coherence_drop || successor.coherence_drop;
+  // A demand merged into a writeback fill still carries its dirty obligation and must retire its token.
+  retval.coherence_writeback_id = predecessor.coherence_writeback_id != 0 ? predecessor.coherence_writeback_id : successor.coherence_writeback_id;
 
   if constexpr (champsim::debug_print) {
     if (successor.type == access_type::PREFETCH) {
@@ -157,7 +161,7 @@ auto CACHE::fill_block(const fill_type& fill, uint32_t metadata) const -> BLOCK
   CACHE::BLOCK to_fill;
   to_fill.valid = true;
   to_fill.prefetch = fill.prefetch_from_this;
-  to_fill.dirty = (fill.type == access_type::WRITE);
+  to_fill.dirty = (fill.type == access_type::WRITE || fill.coherence_writeback_id != 0);
   to_fill.address = fill.address;
   to_fill.v_address = fill.v_address;
   to_fill.data = fill.data_promise->data;
@@ -202,11 +206,18 @@ bool CACHE::handle_fill(const fill_type& fill)
 {
   cpu = fill.cpu;
 
-  if (fill.coherence_drop) {
+  const bool obsolete_writeback = coherence_home != nullptr && fill.coherence_writeback_id != 0
+                                  && !coherence_home->writeback_active(fill.coherence_writeback_id);
+  if (fill.coherence_drop || obsolete_writeback) {
     // A remote write invalidated this copy while the fill was in flight. The requester still gets its response, but no block is
     // installed, and the response carries no grant so that the levels above drop their copies as well.
     if (coherence_home != nullptr) {
-      coherence_home->note_dropped_fill();
+      if (fill.coherence_writeback_id != 0) {
+        coherence_home->note_dropped_writeback();
+        coherence_home->retire_writeback(fill.coherence_writeback_id);
+      } else {
+        coherence_home->note_dropped_fill();
+      }
     }
 
     if (fill.type != access_type::PREFETCH) {
@@ -247,8 +258,12 @@ bool CACHE::handle_fill(const fill_type& fill)
     writeback_packet.instr_id = fill.instr_id;
     writeback_packet.ip = champsim::address{};
     writeback_packet.type = access_type::WRITE;
+    writeback_packet.is_writeback = true;
     writeback_packet.pf_metadata = way->pf_metadata;
     writeback_packet.response_requested = false;
+    if (coherence_home != nullptr && !is_coherence_point()) {
+      writeback_packet.coherence_writeback_id = coherence_home->register_writeback(way->address, fill.cpu);
+    }
 
     if constexpr (champsim::debug_print) {
       fmt::print("[{}] {} evict address: {} v_address: {} prefetch_metadata: {}\n", NAME, __func__, writeback_packet.address, writeback_packet.v_address,
@@ -257,6 +272,9 @@ bool CACHE::handle_fill(const fill_type& fill)
 
     auto success = lower_level->add_wq(writeback_packet);
     if (!success) {
+      if (writeback_packet.coherence_writeback_id != 0) {
+        coherence_home->retire_writeback(writeback_packet.coherence_writeback_id);
+      }
       return false;
     }
   }
@@ -301,14 +319,14 @@ bool CACHE::handle_fill(const fill_type& fill)
         coherence_home->release(evicted_address); // tell the directory this level no longer holds the victim
       }
       if (way != set_end) {
-        if (fill.type == access_type::WRITE) {
+        if (fill.type == access_type::WRITE && !fill.is_writeback) {
           // A store that lands without ownership must obtain it. This happens when a store merged into an MSHR entry whose read
           // was already sent down (the grant came back EXCLUSIVE or SHARED), or when another core read the block while the
           // store's fill was in flight. Writebacks from a level above already own the block and take no action.
           const bool owns = (coherence_home->state_of(fill.address) == champsim::coherence_state::MODIFIED)
                             && (coherence_home->sharers_of(fill.address) == champsim::coherence::directory::bit(fill.cpu));
           if (!owns) {
-            coherence_home->upgrade(fill.address, fill.cpu);
+            way->dirty |= coherence_home->upgrade(fill.address, fill.cpu);
           }
         }
         granted = way->state; // the level above receives a copy in the same state as ours
@@ -330,12 +348,28 @@ bool CACHE::handle_fill(const fill_type& fill)
     ret->push_back(response);
   }
 
+  if (coherence_home != nullptr && fill.coherence_writeback_id != 0) {
+    coherence_home->retire_writeback(fill.coherence_writeback_id);
+  }
+
   return true;
 }
 
 bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 {
   cpu = handle_pkt.cpu;
+
+  // An eviction is not a new store. A coherence action may already have absorbed this writeback while it was in transit.
+  if (coherence_home != nullptr && handle_pkt.coherence_writeback_id != 0
+      && !coherence_home->writeback_active(handle_pkt.coherence_writeback_id)) {
+    coherence_home->note_dropped_writeback();
+    coherence_home->retire_writeback(handle_pkt.coherence_writeback_id);
+    response_type response{handle_pkt.address, handle_pkt.v_address, handle_pkt.data, handle_pkt.pf_metadata, handle_pkt.instr_depend_on_me};
+    for (auto* ret : handle_pkt.to_return) {
+      ret->push_back(response);
+    }
+    return true;
+  }
 
   // access cache
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);
@@ -370,11 +404,12 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
           coherence_home->release(handle_pkt.address); // a writeback from above: the upper level no longer holds it
         }
       } else {
-        if (handle_pkt.type == access_type::WRITE && way->state != champsim::coherence_state::MODIFIED) {
+        const bool needs_ownership = (handle_pkt.type == access_type::WRITE && !handle_pkt.is_writeback) || handle_pkt.type == access_type::RFO;
+        if (needs_ownership && way->state != champsim::coherence_state::MODIFIED) {
           if (way->state == champsim::coherence_state::SHARED) {
-            coherence_home->upgrade(handle_pkt.address, handle_pkt.cpu); // other cores' copies are invalidated; all of ours become MODIFIED
+            way->dirty |= coherence_home->upgrade(handle_pkt.address, handle_pkt.cpu); // preserve absorbed dirty data even on an RFO
           } else {
-            way->state = champsim::coherence_state::MODIFIED; // EXCLUSIVE -> MODIFIED needs no one's permission
+            coherence_home->mark_modified(handle_pkt.address, handle_pkt.cpu); // silent E -> M, including the research metadata
           }
         }
         granted = way->state;
@@ -391,6 +426,9 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
     }
 
     way->dirty |= (handle_pkt.type == access_type::WRITE);
+    if (coherence_home != nullptr && handle_pkt.coherence_writeback_id != 0) {
+      coherence_home->retire_writeback(handle_pkt.coherence_writeback_id);
+    }
 
     // update prefetch stats and reset prefetch bit
     if (useful_prefetch) {
@@ -413,6 +451,8 @@ auto CACHE::mshr_and_forward_packet(const tag_lookup_type& handle_pkt) -> std::p
   fwd_pkt.type = (handle_pkt.type == access_type::WRITE) ? access_type::RFO : handle_pkt.type;
   fwd_pkt.pf_metadata = handle_pkt.pf_metadata;
   fwd_pkt.cpu = handle_pkt.cpu;
+  fwd_pkt.is_writeback = handle_pkt.is_writeback;
+  fwd_pkt.coherence_writeback_id = handle_pkt.coherence_writeback_id;
 
   fwd_pkt.address = handle_pkt.address;
   fwd_pkt.v_address = handle_pkt.v_address;
@@ -494,7 +534,8 @@ bool CACHE::handle_write(const tag_lookup_type& handle_pkt)
   }
 
   fill_type to_allocate{handle_pkt, current_time};
-  to_allocate.data_promise.ready_at(current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY));
+  to_allocate.data_promise = champsim::waitable{fill_type::returned_value{handle_pkt.data, handle_pkt.pf_metadata, champsim::coherence_state::INVALID},
+                                              current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY)};
   inflight_fills.push_back(to_allocate);
 
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
@@ -607,7 +648,7 @@ long CACHE::operate()
 
   // Perform tag checks
   auto do_handle_miss = [this](const auto& pkt) {
-    if (pkt.type == access_type::WRITE && !this->match_offset_bits) {
+    if (pkt.type == access_type::WRITE && (!this->match_offset_bits || pkt.is_writeback)) {
       return this->handle_write(pkt); // Treat writes (that is, writebacks) like fills
     }
     return this->handle_miss(pkt); // Treat writes (that is, stores) like reads
@@ -722,10 +763,14 @@ bool CACHE::coherence_holds(champsim::address addr) const
   }
 
   // A copy that has been requested or granted, but has not yet landed, counts as held
-  if (std::any_of(std::cbegin(MSHR), std::cend(MSHR), matcher)) {
+  auto active_fill = [this, &matcher](const auto& fill) {
+    return !fill.coherence_drop && matcher(fill)
+           && (fill.coherence_writeback_id == 0 || coherence_home == nullptr || coherence_home->writeback_active(fill.coherence_writeback_id));
+  };
+  if (std::any_of(std::cbegin(MSHR), std::cend(MSHR), active_fill)) {
     return true;
   }
-  return std::any_of(std::cbegin(inflight_fills), std::cend(inflight_fills), [&matcher](const auto& x) { return !x.coherence_drop && matcher(x); });
+  return std::any_of(std::cbegin(inflight_fills), std::cend(inflight_fills), active_fill);
 }
 
 bool CACHE::coherence_invalidate(champsim::address addr)

@@ -70,7 +70,10 @@ bool directory::holds(uint32_t cpu, champsim::address addr) const
     return false;
   }
   const auto& group = members.at(cpu);
-  return std::any_of(std::begin(group), std::end(group), [addr](const CACHE* cache) { return cache->coherence_holds(addr); });
+  return std::any_of(std::begin(group), std::end(group), [addr](const CACHE* cache) { return cache->coherence_holds(addr); })
+         || std::any_of(std::begin(writebacks), std::end(writebacks), [this, cpu, addr](const auto& item) {
+              return item.second.active && item.second.cpu == cpu && key(item.second.address) == key(addr);
+            });
 }
 
 bool directory::invalidate_cpu(uint32_t cpu, champsim::address addr)
@@ -81,7 +84,7 @@ bool directory::invalidate_cpu(uint32_t cpu, champsim::address addr)
       dirty |= cache->coherence_invalidate(addr);
     }
   }
-  return dirty;
+  return absorb_writebacks(cpu, addr) || dirty;
 }
 
 bool directory::downgrade_cpu(uint32_t cpu, champsim::address addr)
@@ -92,7 +95,45 @@ bool directory::downgrade_cpu(uint32_t cpu, champsim::address addr)
       dirty |= cache->coherence_downgrade(addr);
     }
   }
+  return absorb_writebacks(cpu, addr) || dirty;
+}
+
+bool directory::absorb_writebacks(uint32_t cpu, champsim::address addr)
+{
+  bool dirty = false;
+  for (auto& [id, pending] : writebacks) {
+    (void)id;
+    if (pending.active && pending.cpu == cpu && key(pending.address) == key(addr)) {
+      pending.active = false;
+      dirty = true;
+    }
+  }
   return dirty;
+}
+
+uint64_t directory::register_writeback(champsim::address addr, uint32_t cpu)
+{
+  assert(cpu < MAX_TRACKED_CPUS);
+  const auto id = next_writeback_id++;
+  writebacks.emplace(id, pending_writeback{addr, cpu, true});
+  return id;
+}
+
+bool directory::writeback_active(uint64_t id) const
+{
+  auto it = writebacks.find(id);
+  return it != std::end(writebacks) && it->second.active;
+}
+
+void directory::retire_writeback(uint64_t id)
+{
+  auto it = writebacks.find(id);
+  if (it == std::end(writebacks)) {
+    return;
+  }
+  auto addr = it->second.address;
+  writebacks.erase(it);
+  release(addr);
 }
 
 void directory::refresh_home(champsim::address addr, const entry* e) const
@@ -177,6 +218,22 @@ bool directory::upgrade(champsim::address addr, uint32_t cpu)
   return absorbed;
 }
 
+void directory::mark_modified(champsim::address addr, uint32_t cpu)
+{
+  assert(cpu < MAX_TRACKED_CPUS);
+  auto& e = entries[key(addr)];
+  const auto me = bit(cpu);
+  assert((e.sharers & ~me) == 0); // Exclusive permission requires no invalidation.
+  e.sharers = me;
+  e.state = coherence_state::MODIFIED;
+  if (cpu < std::size(members)) {
+    for (CACHE* cache : members.at(cpu)) {
+      cache->coherence_set_modified(addr);
+    }
+  }
+  refresh_home(addr, &e);
+}
+
 void directory::release(champsim::address addr)
 {
   auto it = entries.find(key(addr));
@@ -256,6 +313,7 @@ void directory::print_stats() const
   fmt::print("{} COHERENCE GRANTS  E: {}  S: {}  M: {}  UPGRADES: {}\n", home->NAME, s.grants_exclusive, s.grants_shared, s.grants_modified, s.upgrades);
   fmt::print("{} COHERENCE INVALIDATIONS: {}  DOWNGRADES: {}  DIRTY ABSORBED: {}  RELEASES: {}  DROPPED FILLS: {}\n", home->NAME, s.invalidations,
              s.downgrades, s.dirty_absorbed, s.releases, s.dropped_fills);
+  fmt::print("{} COHERENCE DROPPED WRITEBACKS: {}\n", home->NAME, s.dropped_writebacks);
 }
 
 void resolve(const std::vector<CACHE*>& caches, const std::vector<entry_point>& entry_points)

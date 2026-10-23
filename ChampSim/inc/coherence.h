@@ -40,12 +40,13 @@ struct directory_stats {
   uint64_t grants_exclusive = 0; // read requests satisfied while no other core held the block
   uint64_t grants_shared = 0;    // read requests satisfied while another core held the block
   uint64_t grants_modified = 0;  // read-for-ownership requests
-  uint64_t upgrades = 0;         // writes that hit a SHARED copy and had to obtain ownership
+  uint64_t upgrades = 0;         // stores/RFOs that had to obtain ownership of a non-exclusive copy
   uint64_t invalidations = 0;    // cores whose copies were destroyed by a remote write
   uint64_t downgrades = 0;       // cores whose copies were demoted to SHARED by a remote read
   uint64_t dirty_absorbed = 0;   // requests that destroyed a dirty upper-level copy
   uint64_t releases = 0;         // upper-level evictions that removed a core from a sharer set
   uint64_t dropped_fills = 0;    // fills that were invalidated before they landed
+  uint64_t dropped_writebacks = 0; // obsolete writebacks absorbed during a coherence action
 };
 
 /**
@@ -85,11 +86,21 @@ public:
   grant request(champsim::address addr, uint32_t cpu, access_type type);
 
   /**
-   * Obtain ownership for a write that hit a non-MODIFIED copy in one of the given core's caches.
+   * Obtain ownership for a store or RFO that hit a non-MODIFIED copy in one of the given core's caches.
    * Every other core's copy is invalidated and every copy held by the requesting core is promoted to MODIFIED.
    * Returns true if a dirty copy was destroyed.
    */
   bool upgrade(champsim::address addr, uint32_t cpu);
+
+  // Silent E -> M notification: update research metadata without counting an upgrade request.
+  void mark_modified(champsim::address addr, uint32_t cpu);
+
+  // Tokens track dirty evictions even between caches. An invalidation/downgrade absorbs their dirty obligation
+  // and makes the old token inactive; its eventual arrival must not reinstall a private copy or acquire ownership.
+  uint64_t register_writeback(champsim::address addr, uint32_t cpu);
+  [[nodiscard]] bool writeback_active(uint64_t id) const;
+  void retire_writeback(uint64_t id);
+  void note_dropped_writeback() { ++m_sim_stats.dropped_writebacks; }
 
   /**
    * Recompute the sharer set for a block after an upper-level copy was evicted or written back.
@@ -103,6 +114,7 @@ public:
   [[nodiscard]] std::vector<uint32_t> cpus_for_channel(const champsim::channel* ch) const;
   [[nodiscard]] std::vector<uint32_t> cpus_for_return_queue(const std::deque<champsim::channel::response_type>* queue) const;
   [[nodiscard]] std::size_t num_tracked() const { return std::size(entries); }
+  [[nodiscard]] std::size_t num_pending_writebacks() const { return std::size(writebacks); }
   [[nodiscard]] std::size_t num_cpus() const { return std::size(members); }
 
   void begin_phase();
@@ -124,11 +136,19 @@ private:
   [[nodiscard]] bool holds(uint32_t cpu, champsim::address addr) const;
   bool invalidate_cpu(uint32_t cpu, champsim::address addr);
   bool downgrade_cpu(uint32_t cpu, champsim::address addr);
+  bool absorb_writebacks(uint32_t cpu, champsim::address addr);
   void refresh_home(champsim::address addr, const entry* e) const;
 
   CACHE* home;
   std::vector<std::vector<CACHE*>> members{};
   std::unordered_map<uint64_t, entry> entries{};
+  struct pending_writeback {
+    champsim::address address;
+    uint32_t cpu;
+    bool active = true;
+  };
+  uint64_t next_writeback_id = 1;
+  std::unordered_map<uint64_t, pending_writeback> writebacks{};
   directory_stats m_sim_stats{}, m_roi_stats{};
 };
 

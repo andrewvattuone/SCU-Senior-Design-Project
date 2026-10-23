@@ -30,7 +30,8 @@ namespace champsim
  *
  * For the cache that acts as the coherence point (see champsim::coherence::directory), this is the directory's view of the copies
  * held *above* it: INVALID if no upper-level cache holds the block, EXCLUSIVE if exactly one core holds a clean copy, MODIFIED if
- * exactly one core holds a copy it may have written, and SHARED if more than one core holds the block.
+ * exactly one core holds a copy it may have written, and SHARED for shared read permission. One remaining sharer may keep SHARED
+ * after the other sharers evict; it is not silently promoted to EXCLUSIVE.
  */
 enum class coherence_state : uint8_t {
   INVALID = 0,

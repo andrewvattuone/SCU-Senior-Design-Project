@@ -69,6 +69,8 @@ class CACHE : public champsim::operable
     uint32_t cpu;
 
     access_type type;
+    bool is_writeback;
+    uint64_t coherence_writeback_id;
     bool prefetch_from_this;
     bool skip_fill;
     bool is_translated;
@@ -101,6 +103,8 @@ public:
     uint32_t cpu;
 
     access_type type;
+    bool is_writeback;
+    uint64_t coherence_writeback_id;
     bool prefetch_from_this;
     bool coherence_drop = false; // the copy was invalidated in flight: complete the request, but do not install the block
 

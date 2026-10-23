@@ -50,6 +50,10 @@ class channel
     bool is_translated = true;
     bool response_requested = true;
 
+    // CPU stores also use WRITE and may not request a response. Tag actual cache evictions explicitly.
+    bool is_writeback = false;
+    uint64_t coherence_writeback_id = 0;
+
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
     access_type type{access_type::LOAD};
 
