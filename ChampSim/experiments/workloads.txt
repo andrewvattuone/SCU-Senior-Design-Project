@@ -1,0 +1,15 @@
+# name        trace (in TRACE_DIR, without .champsimtrace.xz)   behavior (from the team's CAP Bench -> SPEC mapping)
+perlbench     600.perlbench_s-210B                              reuse
+mcf           605.mcf_s-665B                                    irregular
+omnetpp       620.omnetpp_s-874B                                irregular
+xalancbmk     623.xalancbmk_s-700B                              irregular
+gcc           602.gcc_s-734B                                    irregular
+lbm           619.lbm_s-4268B                                   streaming
+bwaves        603.bwaves_s-3699B                                streaming
+fotonik3d     649.fotonik3d_s-1176B                             streaming
+roms          654.roms_s-842B                                   streaming
+cactuBSSN     607.cactuBSSN_s-2421B                             stencil
+wrf           621.wrf_s-575B                                    stencil
+x264          625.x264_s-18B                                    compute
+deepsjeng     631.deepsjeng_s-928B                              compute
+leela         641.leela_s-800B                                  compute

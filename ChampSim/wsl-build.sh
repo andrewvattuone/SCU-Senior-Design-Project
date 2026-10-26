@@ -26,7 +26,7 @@ shift || true
 
 mkdir -p "$DST"
 rsync -a --delete \
-  --exclude .git \
+  --exclude .git --exclude vcpkg_installed \
   --exclude 'vcpkg/buildtrees' --exclude 'vcpkg/downloads' --exclude 'vcpkg/packages' \
   --exclude .csconfig --exclude _configuration.mk --exclude absolute.options --exclude bin --exclude 'test/bin' \
   "$SRC" "$DST"
