@@ -13,3 +13,9 @@ wrf           621.wrf_s-575B                                    stencil
 x264          625.x264_s-18B                                    compute
 deepsjeng     631.deepsjeng_s-928B                              compute
 leela         641.leela_s-800B                                  compute
+#
+# CloudSuite (CRC-2 per-core traces from the Pythia artifact list; 4th column = trace format, {core} = 0..N-1).
+# Run on p4/p4s: each core gets its own thread's trace; in p4s they share one address space (real sharing).
+cassandra     cloudsuite/cassandra_phase0_core{core}.trace.xz   server      cloudsuite
+nutch         cloudsuite/nutch_phase0_core{core}.trace.xz       server      cloudsuite
+streaming     cloudsuite/streaming_phase2_core{core}.trace.xz   server      cloudsuite

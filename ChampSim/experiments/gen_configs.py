@@ -11,6 +11,10 @@ Variants:
   p1   1 core
   p2   2 cores, separate address spaces (no cross-core sharing)
   p2s  2 cores, shared address space (run the same trace on both cores to create sharing)
+  p4   4 cores, separate address spaces (per-core CloudSuite traces, or the same SPEC trace on every core)
+  p4s  4 cores, shared address space (per-core CloudSuite traces share one address space)
+
+The default --variants are p1 p2 p2s; pass e.g. --variants p4 p4s to build the 4-core variants.
 """
 
 import argparse
@@ -32,7 +36,11 @@ VARIANTS = {
     'p1': {'num_cores': 1, 'shared_address_space': False},
     'p2': {'num_cores': 2, 'shared_address_space': False},
     'p2s': {'num_cores': 2, 'shared_address_space': True},
+    'p4': {'num_cores': 4, 'shared_address_space': False},
+    'p4s': {'num_cores': 4, 'shared_address_space': True},
 }
+
+DEFAULT_VARIANTS = ['p1', 'p2', 'p2s']
 
 DEFAULT_POLICIES = ['lru', 'srrip', 'drrip']
 
@@ -56,7 +64,8 @@ def make_config(base: dict, variant: str, policy: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--variants', nargs='+', default=list(VARIANTS), choices=list(VARIANTS))
+    parser.add_argument('--variants', nargs='+', default=DEFAULT_VARIANTS, choices=list(VARIANTS),
+                        help='default: %(default)s')
     parser.add_argument('--policies', nargs='+', default=DEFAULT_POLICIES,
                         help='replacement module names under replacement/ (default: %(default)s)')
     parser.add_argument('--out', type=pathlib.Path, default=HERE / 'configs')
@@ -73,7 +82,7 @@ def main() -> None:
         for policy in args.policies:
             path = args.out / f'{variant}_{policy}.json'
             path.write_text(json.dumps(make_config(base, variant, policy), indent=2) + '\n', newline='\n')
-            print(f'wrote {path.relative_to(HERE.parent)}')
+            print(f'wrote {path}')
 
 
 if __name__ == '__main__':
