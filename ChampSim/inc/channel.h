@@ -80,6 +80,11 @@ class channel
     // when the copy was invalidated while the response was in flight and must not be installed.
     coherence_state granted = coherence_state::INVALID;
 
+    // Number of cores sharing the block according to the directory, as reported with the grant (the requester included). The
+    // coherence point fills it in right after the grant; a private level forwards the count it stored with its own copy. Zero from
+    // a non-coherent source. It is a snapshot: it is not updated if other cores join or leave while the response is in flight.
+    uint32_t sharer_count = 0;
+
     response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, std::vector<uint64_t> deps)
         : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), instr_depend_on_me(deps)
     {

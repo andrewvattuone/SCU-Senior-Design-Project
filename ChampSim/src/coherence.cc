@@ -184,7 +184,7 @@ auto directory::request(champsim::address addr, uint32_t cpu, access_type type) 
   }
 
   refresh_home(addr, &e);
-  return {e.state, absorbed};
+  return {e.state, absorbed, static_cast<uint32_t>(popcount(e.sharers))};
 }
 
 bool directory::upgrade(champsim::address addr, uint32_t cpu)

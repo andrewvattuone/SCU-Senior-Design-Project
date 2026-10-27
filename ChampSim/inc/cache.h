@@ -98,6 +98,7 @@ public:
       champsim::address data;
       uint32_t pf_metadata;
       champsim::coherence_state granted = champsim::coherence_state::INVALID;
+      uint32_t sharer_count = 0; // the directory's sharer count delivered with the grant (see channel::response::sharer_count)
     };
     champsim::waitable<returned_value> data_promise{};
     uint32_t cpu;
@@ -136,8 +137,9 @@ private:
   [[nodiscard]] BLOCK fill_block(const fill_type& fill, uint32_t metadata) const;
   using set_type = std::vector<BLOCK>;
 
-  champsim::coherence_state coherence_grant(champsim::address addr, const std::deque<response_type>* requester, uint32_t fallback_cpu, access_type type,
-                                            BLOCK* way);
+  // Ask the directory for a grant on behalf of the core(s) draining `requester`; sets response.granted and response.sharer_count
+  void coherence_grant(champsim::address addr, const std::deque<response_type>* requester, uint32_t fallback_cpu, access_type type, BLOCK* way,
+                       response_type& response);
 
   std::pair<set_type::iterator, set_type::iterator> get_set_span(champsim::address address);
   [[nodiscard]] std::pair<set_type::const_iterator, set_type::const_iterator> get_set_span(champsim::address address) const;

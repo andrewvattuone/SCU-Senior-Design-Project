@@ -37,6 +37,12 @@ struct cache_block {
   coherence_state state = coherence_state::INVALID;
   // At a coherence point, one bit per core that holds a copy above it. Zero elsewhere.
   uint64_t sharers = 0;
+  // Private (non-coherence-point) caches only: the sharer count reported by the directory when this copy was granted, as a real
+  // private cache would learn it from the grant message. It MAY BE STALE: it is not updated when other cores later join (read the
+  // block) or leave (evict it, or are invalidated). It is refreshed only when this core obtains ownership through an upgrade or a
+  // silent E -> M transition, which make this core the sole holder (count 1). Always >= 1 for a valid copy in a coherent private
+  // cache; 0 at the coherence point (use `sharers` there) and in caches outside any coherence domain.
+  uint32_t delivered_sharers = 0;
 };
 } // namespace champsim
 

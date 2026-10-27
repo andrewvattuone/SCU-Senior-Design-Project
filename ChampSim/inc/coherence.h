@@ -71,6 +71,9 @@ public:
   struct grant {
     coherence_state state;
     bool absorbed_dirty; // a dirty upper-level copy was destroyed while servicing this request
+    // Number of cores holding the block right after this grant, the requester included. Delivered to the requester with the
+    // grant, as a real directory could; the requester's copy keeps it even if the sharer set changes later.
+    uint32_t sharer_count = 0;
   };
 
   explicit directory(CACHE* home);

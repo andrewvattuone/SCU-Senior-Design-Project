@@ -178,8 +178,10 @@ auto CACHE::fill_block(const fill_type& fill, uint32_t metadata) const -> BLOCK
   } else if (to_fill.dirty) {
     // A store fill or a writeback from above: this copy has been written
     to_fill.state = champsim::coherence_state::MODIFIED;
+    to_fill.delivered_sharers = 1; // a written copy is owned by this core alone (a store that lands without ownership upgrades)
   } else {
     to_fill.state = fill.data_promise->granted;
+    to_fill.delivered_sharers = std::max<uint32_t>(fill.data_promise->sharer_count, 1); // the count delivered with the grant
     if (to_fill.state == champsim::coherence_state::INVALID) {
       to_fill.state = champsim::coherence_state::EXCLUSIVE; // the lower level did not participate in coherence
     }
@@ -309,6 +311,7 @@ bool CACHE::handle_fill(const fill_type& fill)
 
   // COHERENCE
   auto granted = champsim::coherence_state::INVALID;
+  uint32_t delivered = 0;
   if (coherence_home != nullptr) {
     if (is_coherence_point()) {
       if (fill.type == access_type::WRITE) {
@@ -329,7 +332,8 @@ bool CACHE::handle_fill(const fill_type& fill)
             way->dirty |= coherence_home->upgrade(fill.address, fill.cpu);
           }
         }
-        granted = way->state; // the level above receives a copy in the same state as ours
+        granted = way->state;               // the level above receives a copy in the same state as ours
+        delivered = way->delivered_sharers; // ... and the sharer count the directory reported for it
       }
     }
   }
@@ -341,9 +345,10 @@ bool CACHE::handle_fill(const fill_type& fill)
 
   response_type response{fill.address, fill.v_address, fill.data_promise->data, metadata_thru, fill.instr_depend_on_me};
   response.granted = granted;
+  response.sharer_count = delivered;
   for (auto* ret : fill.to_return) {
     if (coherence_home != nullptr && is_coherence_point() && fill.type != access_type::WRITE) {
-      response.granted = coherence_grant(fill.address, ret, fill.cpu, fill.type, (way != set_end) ? &*way : nullptr);
+      coherence_grant(fill.address, ret, fill.cpu, fill.type, (way != set_end) ? &*way : nullptr, response);
     }
     ret->push_back(response);
   }
@@ -398,6 +403,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
     // COHERENCE
     auto granted = champsim::coherence_state::INVALID;
+    uint32_t delivered = 0;
     if (coherence_home != nullptr) {
       if (is_coherence_point()) {
         if (handle_pkt.type == access_type::WRITE) {
@@ -413,14 +419,16 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
           }
         }
         granted = way->state;
+        delivered = way->delivered_sharers; // a private hit forwards the (possibly stale) count stored with this copy
       }
     }
 
     response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
     response.granted = granted;
+    response.sharer_count = delivered;
     for (auto* ret : handle_pkt.to_return) {
       if (coherence_home != nullptr && is_coherence_point() && handle_pkt.type != access_type::WRITE) {
-        response.granted = coherence_grant(handle_pkt.address, ret, handle_pkt.cpu, handle_pkt.type, &*way);
+        coherence_grant(handle_pkt.address, ret, handle_pkt.cpu, handle_pkt.type, &*way, response);
       }
       ret->push_back(response);
     }
@@ -720,6 +728,7 @@ long CACHE::invalidate_entry(champsim::address inval_addr)
     inv_way->valid = false;
     inv_way->state = champsim::coherence_state::INVALID;
     inv_way->sharers = 0;
+    inv_way->delivered_sharers = 0;
 
     if (was_valid && coherence_home != nullptr && !is_coherence_point()) {
       coherence_home->release(inval_addr);
@@ -731,8 +740,8 @@ long CACHE::invalidate_entry(champsim::address inval_addr)
 
 // COHERENCE
 
-champsim::coherence_state CACHE::coherence_grant(champsim::address addr, const std::deque<response_type>* requester, uint32_t fallback_cpu, access_type type,
-                                                 BLOCK* way)
+void CACHE::coherence_grant(champsim::address addr, const std::deque<response_type>* requester, uint32_t fallback_cpu, access_type type, BLOCK* way,
+                            response_type& response)
 {
   // Each upper-level return queue is served on behalf of the core(s) whose caches drain it. A merged fill may answer several cores
   // at once; they are granted in turn, so a later read-for-ownership correctly invalidates an earlier grant.
@@ -741,16 +750,16 @@ champsim::coherence_state CACHE::coherence_grant(champsim::address addr, const s
     cpus.push_back(fallback_cpu);
   }
 
-  auto result = champsim::coherence_state::INVALID;
+  response.granted = champsim::coherence_state::INVALID;
+  response.sharer_count = 0;
   for (auto requesting_cpu : cpus) {
     auto granted = coherence_directory->request(addr, requesting_cpu, type);
-    result = granted.state;
+    response.granted = granted.state;
+    response.sharer_count = granted.sharer_count; // the directory reports the sharer count with the grant
     if (granted.absorbed_dirty && way != nullptr) {
       way->dirty = true; // the destroyed upper-level copy was dirty; this copy now carries that writeback obligation
     }
   }
-
-  return result;
 }
 
 bool CACHE::coherence_holds(champsim::address addr) const
@@ -786,6 +795,7 @@ bool CACHE::coherence_invalidate(champsim::address addr)
     way->dirty = false;
     way->state = champsim::coherence_state::INVALID;
     way->sharers = 0;
+    way->delivered_sharers = 0;
   }
 
   // Copies that have been granted but not yet installed are dropped when they land. A write that has not landed carries dirty data.
@@ -846,6 +856,7 @@ void CACHE::coherence_set_modified(champsim::address addr)
   auto way = std::find_if(set_begin, set_end, [&matcher](const auto& x) { return x.valid && matcher(x); });
   if (way != set_end) {
     way->state = champsim::coherence_state::MODIFIED;
+    way->delivered_sharers = 1; // ownership (upgrade or silent E -> M) makes this core the sole holder; refreshes a stale count
   }
 }
 
@@ -906,7 +917,7 @@ void CACHE::finish_packet(const response_type& packet)
   }
 
   // MSHR holds the most updated information about this request
-  fill_type::returned_value finished_value{packet.data, packet.pf_metadata, packet.granted};
+  fill_type::returned_value finished_value{packet.data, packet.pf_metadata, packet.granted, packet.sharer_count};
   mshr_entry->data_promise = champsim::waitable{finished_value, current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY)};
 
   if (coherence_home != nullptr && !is_coherence_point() && packet.granted == champsim::coherence_state::INVALID) {
